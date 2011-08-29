@@ -6,11 +6,15 @@
 
 module TypecheckedDSL where
 
+import Control.Monad.Error
+import Data.List
+
 -- Untyped terms (what I get from my parser):
 
 data Exp 
   = EDouble     Double
   | EString     String
+	| ELet        String Exp Exp
 	| EIdentifier String
 	| EApp        Exp Exp
 	deriving (Show)
@@ -19,7 +23,11 @@ data Exp
 
 data Term :: * -> * where
   Prim :: Primitive a -> Term a
+  Let  :: Var a -> Term a -> Term b -> Term b
+  Ref  :: Var a -> Term a
   App  :: Term (a->b) -> Term a -> Term b
+
+data Var a = Var (Typ a) String
 
 
 -- Primitives
@@ -31,21 +39,6 @@ data Primitive :: * -> * where
   Show :: Primitive (Double -> String)
   Inc  :: Primitive (Double -> Double)
   Plus :: Primitive (Double -> Double -> Double)
-
-
--- Typed evaluator
-
-eval :: Term a -> a
-eval (Prim x) = evalPrim x
-eval (App e1 e2) = (eval e1) (eval e2)
-
-evalPrim :: Primitive a -> a
-evalPrim (Num x) = x
-evalPrim (Str x) = x
-evalPrim Rev     = reverse
-evalPrim Show    = show
-evalPrim Inc     = (+ 1)
-evalPrim Plus    = (+)
 
 
 -- Types and type comparison
@@ -98,11 +91,19 @@ env0 =
   , ("+",    tt Plus)
   ]
 
+tt :: (Typed a) => Primitive a -> TypedTerm
 tt t = TypedTerm typ (Prim t)
 
 typecheck :: Gamma -> Exp -> Either String TypedTerm
 typecheck _ (EDouble x) = Right $ tt (Num x)
 typecheck _ (EString x) = Right $ tt (Str x)
+typecheck env (ELet i e1 e2) = do
+  TypedTerm typ1 term1 <- typecheck env e1
+  let
+    v    = Var typ1 i
+    env' = (i, TypedTerm typ1 (Ref v)) : env
+  TypedTerm typ2 term2 <- typecheck env' e2
+  return $ TypedTerm typ2 (Let v term1 term2)
 typecheck env (EIdentifier x) = maybe err Right $ lookup x env
   where err = Left $ "unknown identifier: " ++ x
 typecheck env (EApp e1 e2) =
@@ -132,6 +133,35 @@ typechecka (TypedTerm t1 e1) _ =
     Left $ "Trying to apply not-a-function: " ++ show t1
 
 
+-- Evaluation
+data TypedVal = forall t. TypedVal (Typ t) t
+
+-- Evaluation environment
+type Env = [(String,TypedVal)]
+
+
+-- Typed evaluator
+eval :: Env -> Term a -> a
+eval _ (Prim x) = evalPrim x
+eval env (Let (Var typ v) term1 term2) =
+  eval ((v, TypedVal typ $ eval env term1) : env) term2
+eval env (Ref (Var typ v)) = eval' (lookup v env)
+  where
+    eval' (Just (TypedVal typ' val)) = eval'' (eqt typ' typ) val
+    eval' Nothing                    = error "Typechecker should have ensured that identifier exists."
+    eval'' :: Maybe (EQ a b) -> a -> b
+    eval'' (Just Refl) val = val
+    eval'' Nothing     _   = error "Typechecker should have ensured that identifier is of the correct type."  
+eval env (App e1 e2) = (eval env e1) (eval env e2)
+
+evalPrim :: Primitive a -> a
+evalPrim (Num x) = x
+evalPrim (Str x) = x
+evalPrim Rev     = reverse
+evalPrim Show    = show
+evalPrim Inc     = (+ 1)
+evalPrim Plus    = (+)
+
 
 -- tests
 
@@ -144,6 +174,9 @@ te3 = EApp (EApp (EIdentifier "+")
 te4 = EApp (EIdentifier "rev") te3
 te5 = EApp (EIdentifier "rev") (EApp (EIdentifier "show") te3)
 
+te6 = ELet "x" (EDouble 3.0) (EApp (EIdentifier "inc") (EIdentifier "x"))
+te7 = ELet "x" (EDouble 3.0) (EApp (EIdentifier "rev") (EIdentifier "x"))
+
 
 -- typecheck-and-eval
 
@@ -152,7 +185,7 @@ teval exp = either (terror) (ev) (typecheck env0 exp)
  where
   terror err = "Type error: " ++ err
   ev (TypedTerm t e) = "type " ++ show t ++ ", value " ++
-       (tryshow (eqt t TString) (eqt t TDouble) (eval e))
+       (tryshow (eqt t TString) (eqt t TDouble) (eval [] e))
   tryshow :: Maybe (EQ t String) -> Maybe (EQ t Double) -> t -> String
   tryshow (Just Refl) _ t = t
   tryshow _ (Just Refl) t = show t
@@ -173,4 +206,10 @@ teval exp = either (terror) (ev) (typecheck env0 exp)
 
 *TypecheckedDSL> teval te5
 "type String, value 0.23"
+
+*TypecheckedDSL> teval te6
+"type Double, value 4.0"
+
+*TypecheckedDSL> teval te7
+"Type error: incompatible type of the application: (String->String) and Double"
 -}
