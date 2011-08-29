@@ -8,27 +8,44 @@ module TypecheckedDSL where
 
 -- Untyped terms (what I get from my parser):
 
-data Exp =  EDouble Double | 
-	    EString String | 
-	    EPrim String | 
-	    EApp Exp Exp deriving (Show)
+data Exp 
+  = EDouble     Double
+  | EString     String
+	| EIdentifier String
+	| EApp        Exp Exp
+	deriving (Show)
 
 -- Typed terms:
 
-data Term a where
-  Num :: Double -> Term Double
-  Str :: String -> Term String
-  App :: Term (a->b) -> Term a -> Term b
-  Fun :: (a->b) -> Term (a->b)
+data Term :: * -> * where
+  Prim :: Primitive a -> Term a
+  App  :: Term (a->b) -> Term a -> Term b
+
+
+-- Primitives
+
+data Primitive :: * -> * where
+  Num  :: Double -> Primitive Double
+  Str  :: String -> Primitive String
+  Rev  :: Primitive (String -> String)
+  Show :: Primitive (Double -> String)
+  Inc  :: Primitive (Double -> Double)
+  Plus :: Primitive (Double -> Double -> Double)
 
 
 -- Typed evaluator
 
 eval :: Term a -> a
-eval (Num x) = x
-eval (Str x) = x
-eval (Fun x ) = x
+eval (Prim x) = evalPrim x
 eval (App e1 e2) = (eval e1) (eval e2)
+
+evalPrim :: Primitive a -> a
+evalPrim (Num x) = x
+evalPrim (Str x) = x
+evalPrim Rev     = reverse
+evalPrim Show    = show
+evalPrim Inc     = (+ 1)
+evalPrim Plus    = (+)
 
 
 -- Types and type comparison
@@ -58,6 +75,11 @@ instance Show (Typ a) where
     show TDouble = "Double"
     show TString = "String"
     show (TFun ta tb) = "(" ++ show ta ++ "->" ++ show tb ++ ")"
+    
+class    Typed a      where typ :: Typ a
+instance Typed Double where typ = TDouble
+instance Typed String where typ = TString
+instance (Typed a, Typed b) => Typed (a -> b) where typ = TFun typ typ
 
 
 -- Type checking
@@ -69,19 +91,20 @@ type Gamma = [(String,TypedTerm)]
 
 -- Initial environment (the types of primitives)
 
-env0 = [("rev", TypedTerm (TFun TString TString) (Fun reverse)),
-	-- sorry, no polymorphism!
-	("show", TypedTerm (TFun TDouble TString) (Fun show)),
-	("inc",  TypedTerm (TFun TDouble TDouble) (Fun (+ 1.0))),
-	("+",    TypedTerm (TFun TDouble (TFun TDouble TDouble)) (Fun (+)))
-       ]
+env0 =
+  [ ("rev",  tt Rev)
+  , ("show", tt Show)
+  , ("inc",  tt Inc)
+  , ("+",    tt Plus)
+  ]
+
+tt t = TypedTerm typ (Prim t)
 
 typecheck :: Gamma -> Exp -> Either String TypedTerm
-  -- literals
-typecheck _ (EDouble x) = Right $ TypedTerm TDouble (Num x)
-typecheck _ (EString x) = Right $ TypedTerm TString (Str x)
-typecheck env (EPrim x) = maybe err Right $ lookup x env
-  where err = Left $ "unknown primitive " ++ x
+typecheck _ (EDouble x) = Right $ tt (Num x)
+typecheck _ (EString x) = Right $ tt (Str x)
+typecheck env (EIdentifier x) = maybe err Right $ lookup x env
+  where err = Left $ "unknown identifier: " ++ x
 typecheck env (EApp e1 e2) =
   case (typecheck env e1, typecheck env e2) of
     (Right e1, Right e2) -> typechecka e1 e2
@@ -112,14 +135,14 @@ typechecka (TypedTerm t1 e1) _ =
 
 -- tests
 
-te1 = EApp (EPrim "inc") (EDouble 10.0)
-te2 = EApp (EDouble 10.0) (EPrim "inc")
-te3 = EApp (EApp (EPrim "+") 
-	     (EApp (EPrim "inc") (EDouble 10.0)))
-           (EApp (EPrim "inc") (EDouble 20.0))
+te1 = EApp (EIdentifier "inc") (EDouble 10.0)
+te2 = EApp (EDouble 10.0) (EIdentifier "inc")
+te3 = EApp (EApp (EIdentifier "+") 
+	     (EApp (EIdentifier "inc") (EDouble 10.0)))
+           (EApp (EIdentifier "inc") (EDouble 20.0))
             
-te4 = EApp (EPrim "rev") te3
-te5 = EApp (EPrim "rev") (EApp (EPrim "show") te3)
+te4 = EApp (EIdentifier "rev") te3
+te5 = EApp (EIdentifier "rev") (EApp (EIdentifier "show") te3)
 
 
 -- typecheck-and-eval
